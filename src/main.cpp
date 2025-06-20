@@ -9,12 +9,37 @@ int main() {
 
     std::cout << "\n-----------------------\n";
 
-    std::string str = "Hello, World!";
+    std::string str = "Boo";
+    std::string& str_ref = str;
 
-    json_array arr1{ std::move(str),2,false,4 };
-    str = "Changed";
-    json_array arr2{ 5,6,7,{"key","value","key2",false},{{"key",false},{"log","123123"}} };
+    json_document doc{
+        str,
+        1,
+        false,
+        json_object{
+            { "key1", "value1" },
+            { "key2", 42 },
+            { "key3", true },
+            { "key4", 3.14 },
+            { "key5",
+                {
+                    "item1",
+                    "item2",
+                    "item3",
+                    false,
+                    json_object {
+                        {"key1", false},
+                        {"key7", "value"s}
+                    }
+                }
+            }
+        },
+        {
+            false,nullptr,"hello",123,5.66
+        }
+    };
 
+    std::cout << "Document root: " << doc.to_string() << "\n";
 
 
     std::cout << "\n-----------------------\n";
