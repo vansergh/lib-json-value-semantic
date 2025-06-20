@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <sstream>
 
 namespace json {
 
@@ -183,14 +184,28 @@ namespace json {
         std::string format_string_(const json_string_t& value) const {
             std::string result;
             result.reserve(value.size() + 2);
-            result += '\"';
-            for (const char ch : value) {
-                if (ch == '"' || ch == '\\') {
-                    result += '\\';
+            result += '"';
+            for (char c : value) {
+                switch (c) {
+                    case '\"': result += "\\\""; break;
+                    case '\\': result += "\\\\"; break;
+                    case '\b': result += "\\b"; break;
+                    case '\f': result += "\\f"; break;
+                    case '\n': result += "\\n"; break;
+                    case '\r': result += "\\r"; break;
+                    case '\t': result += "\\t"; break;
+                    default:
+                        if (static_cast<unsigned char>(c) < 0x20) {
+                            char buf[7];
+                            snprintf(buf, sizeof(buf), "\\u%04x", c & 0xFF);
+                            result += buf;
+                        }
+                        else {
+                            result += c;
+                        }
                 }
-                result += ch;
             }
-            result += '\"';
+            result += '"';
             return result;
         }
 
@@ -201,17 +216,17 @@ namespace json {
 
             std::string indent(indent_level * indent_step, ' ');
             std::string next_indent((indent_level + 1) * indent_step, ' ');
-            std::string result{ "[\n" };
+            std::ostringstream result; result << "[\n";
 
             for (std::size_t i{ 0 }; i < value.size(); ++i) {
-                result += next_indent + format_value_(value[i], indent_level + 1, indent_step);
+                result << next_indent << format_value_(value[i], indent_level + 1, indent_step);
                 if (i + 1 < value.size()) {
-                    result += ",";
+                    result << ",";
                 }
-                result += "\n";
+                result << "\n";
             }
-            result += indent + "]";
-            return result;
+            result << indent << "]";
+            return result.str();
         }
 
         std::string format_object_(const json_object& value, int indent_level = 0, int indent_step = 4) const {
@@ -220,16 +235,17 @@ namespace json {
             }
             std::string indent(indent_level * indent_step, ' ');
             std::string next_indent((indent_level + 1) * indent_step, ' ');
-            std::string result{ "{\n" };
-            std::size_t count{0};
+            std::ostringstream result;
+            result << "{\n";
+            std::size_t count{ 0 };
             for (const auto& [k, v] : value) {
-                result += next_indent + format_string_(k) + ": " + format_value_(v, indent_level + 1, indent_step);
-                if (++count < value.size()) result += ",";
-                result += "\n";
+                result << next_indent << format_string_(k) << ": " << format_value_(v, indent_level + 1, indent_step);
+                if (++count < value.size()) result << ",";
+                result << "\n";
             }
-            result += indent + "}";
+            result << indent << "}";
 
-            return result;
+            return result.str();
         }
 
         std::string format_value_(const json_value& value, int indent_level = 0, int indent_step = 4) const {
@@ -245,7 +261,10 @@ namespace json {
                 return std::to_string(value.as<json_int_t>());
             }
             else if (value.is<json_double_t>()) {
-                return std::to_string(value.as<json_double_t>());
+                std::ostringstream oss;
+                oss.precision(15);
+                oss << value.as<json_double_t>();
+                return oss.str();
             }
             else if (value.is<json_string_t>()) {
                 return format_string_(value.as<json_string_t>());
