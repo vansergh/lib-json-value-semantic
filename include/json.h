@@ -529,7 +529,7 @@ namespace json {
                 log_error_("Unexpected tokens after JSON document end");
                 return json_value(nullptr);
             }
-            
+
             return root;
         }
 
