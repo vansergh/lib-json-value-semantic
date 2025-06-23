@@ -1,17 +1,14 @@
 #pragma once
 
 #include <cstdint>
-#include <concepts>
 #include <cmath>
 #include <variant>
 #include <string>
 #include <vector>
 #include <unordered_map>
-#include <string_view>
-#include <ranges>
 #include <sstream>
-#include <memory>
 #include <stack>
+#include <cassert>
 
 namespace json {
 
@@ -32,7 +29,7 @@ namespace json {
         concept is_json_value =
             std::is_same_v<T, json_null_t> ||
             std::is_same_v<T, json_bool_t> ||
-            std::is_integral_v<T> ||
+            std::is_same_v<T, json_int_t> ||
             std::is_same_v<T, json_double_t> ||
             std::is_same_v<T, json_string_t> ||
             std::is_same_v<T, json_array> ||
@@ -67,7 +64,12 @@ namespace json {
         {
         }
 
-        json_value(const char* value) :
+        json_value(json_null_t) :
+            value_(nullptr)
+        {
+        }
+
+        explicit json_value(const char* value) :
             json_value(std::string(value))
         {
         }
@@ -170,7 +172,7 @@ namespace json {
         json_token next_token() {
             skip_whitespaces_();
             if (pos_ >= source_.size()) {
-                return { json_token_type::end_of_file,"" };
+                return { json_token_type::end_of_file };
             }
 
             std::string::value_type ch{ peek_() };
@@ -457,6 +459,7 @@ namespace json {
         }
 
         std::string::value_type peek_() const {
+            assert(pos_ < source_.size());
             return source_[pos_];
         }
 
@@ -551,11 +554,9 @@ namespace json {
 
         json_value parse_complex_(std::stack<json_value>& stack) {
             std::string current_key;
-            enum class context_t { object, array } context;
-            auto update_context = [&]() {
-                context = stack.top().is<json_object>() ? context_t::object : context_t::array;
+            enum class context_t { object, array } context{
+                stack.top().is<json_object>() ? context_t::object : context_t::array
             };
-            update_context();
             enum class token_expected_t {
                 value, key, comma, colon
             } token_expected{
@@ -591,7 +592,7 @@ namespace json {
                         }
                         else {
                             dangling_comma = false;
-                            update_context();
+                            context = stack.top().is<json_object>() ? context_t::object : context_t::array;
                             if (context == context_t::array) {
                                 stack.top().as<json_array>().emplace_back(std::move(complete_node));
                             }
@@ -631,7 +632,7 @@ namespace json {
                             return json_value(std::move(complete_node));
                         }
                         else {
-                            update_context();
+                            context = stack.top().is<json_object>() ? context_t::object : context_t::array;
                             if (context == context_t::array) {
                                 stack.top().as<json_array>().emplace_back(std::move(complete_node));
                             }
@@ -832,7 +833,7 @@ namespace json {
 
         std::string format_array_(const json_array& value, int indent_level = 0, int indent_step = 4) const {
             if (value.empty()) {
-                return "[ ]";
+                return "[]";
             }
 
             std::string indent(indent_level * indent_step, ' ');
@@ -852,7 +853,7 @@ namespace json {
 
         std::string format_object_(const json_object& value, int indent_level = 0, int indent_step = 4) const {
             if (value.empty()) {
-                return "{ }";
+                return "{}";
             }
             std::string indent(indent_level * indent_step, ' ');
             std::string next_indent((indent_level + 1) * indent_step, ' ');
