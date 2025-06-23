@@ -11,6 +11,7 @@
 #include <ranges>
 #include <sstream>
 #include <memory>
+#include <stack>
 
 namespace json {
 
@@ -71,7 +72,7 @@ namespace json {
         {
         }
 
-        json_value(std::initializer_list<json_value> list)
+        explicit json_value(std::initializer_list<json_value> list)
         {
             json_array tmp;
             tmp.reserve(list.size());
@@ -132,6 +133,14 @@ namespace json {
         string_value, int_value, double_value, bool_value, null_value,
         end_of_file
     };
+
+    constexpr bool is_value_token(json_token_type type) {
+        return type == json_token_type::string_value ||
+            type == json_token_type::int_value ||
+            type == json_token_type::double_value ||
+            type == json_token_type::bool_value ||
+            type == json_token_type::null_value;
+    }
 
     struct json_token {
         json_token_type type;
@@ -483,51 +492,41 @@ namespace json {
         }
 
         json_value parse() {
+
             json_value root;
 
+            std::stack<json_value> stack;
             json_token token = lexer_.next_token();
 
             if (token.type == json_token_type::end_of_file) {
+                log_error_("Empty JSON document");
                 return root;
             }
-
-            if (!token.is_valid) {
-                is_valid_ = false;
-                error_message_ = token.error_str;
+            else if (!token.is_valid || token.type == json_token_type::invalid) {
+                log_error_(token.error_str);
                 return root;
             }
-
-            if (token.type == json_token_type::left_brace) {
-                root = std::move(parse_object_());
-            }
-            else if (token.type == json_token_type::left_bracket) {
-                root = std::move(parse_array_());
-            }
-            else if (token.type == json_token_type::string_value ||
-                token.type == json_token_type::int_value ||
-                token.type == json_token_type::double_value ||
-                token.type == json_token_type::bool_value ||
-                token.type == json_token_type::null_value) {
+            else if (is_value_token(token.type)) {
                 root = std::move(token.value);
             }
+            else if (token.type == json_token_type::left_brace) {
+                stack.push(json_value(json_object{}));
+                root = parse_complex_(stack);
+            }
+            else if (token.type == json_token_type::left_bracket) {
+                stack.push(json_value(json_array{}));
+                root = parse_complex_(stack);
+            }
             else {
-                is_valid_ = false;
-                error_message_ = "Invalid JSON document: " + token.error_str;
+                log_error_("Unexpected token in root: " + token.error_str);
                 return root;
             }
 
-            json_token next = lexer_.next_token();
-            if (next.type != json_token_type::end_of_file) {
-                is_valid_ = false;
-                if (!error_message_.empty()) {
-                    error_message_ += "\n";
-                }
-                if (!next.is_valid && !next.error_str.empty()) {
-                    error_message_ += "Extra data after root value: " + next.error_str;
-                }
-                return root;
+            if (lexer_.next_token().type != json_token_type::end_of_file) {
+                log_error_("Unexpected tokens after JSON document end");
+                return json_value(nullptr);
             }
-
+            
             return root;
         }
 
@@ -542,102 +541,174 @@ namespace json {
 
     private:
 
-        json_value parse_array_() {
-            json_array arr;
-            json_token token = lexer_.next_token();
-
-            if (token.type == json_token_type::right_bracket) {
-                return json_value(std::move(arr));
+        void log_error_(const std::string& text) {
+            is_valid_ = false;
+            if (!error_message_.empty()) {
+                error_message_ += '\n';
             }
-            while (true) {
-                if (token.type == json_token_type::left_brace) {
-                    arr.emplace_back(std::move(parse_object_()));
-                }
-                else if (token.type == json_token_type::left_bracket) {
-                    arr.emplace_back(std::move(parse_array_()));
-                }
-                else if (token.type == json_token_type::string_value ||
-                    token.type == json_token_type::int_value ||
-                    token.type == json_token_type::double_value ||
-                    token.type == json_token_type::bool_value ||
-                    token.type == json_token_type::null_value) {
-                    arr.emplace_back(std::move(token.value));
-                }
-                else {
-                    is_valid_ = false;
-                    error_message_ = "Invalid value type in array";
-                    return nullptr;
-                }
-
-                token = lexer_.next_token();
-                if (token.type == json_token_type::right_bracket) {
-                    break;
-                }
-                if (token.type != json_token_type::comma) {
-                    is_valid_ = false;
-                    error_message_ = "Expected comma or right bracket in array";
-                    return nullptr;
-                }
-                token = lexer_.next_token();
-            }
-            return json_value(std::move(arr));
+            error_message_ += text;
         }
 
-        json_value parse_object_() {
-            json_object obj;
-            json_token token = lexer_.next_token();
+        json_value parse_complex_(std::stack<json_value>& stack) {
+            std::string current_key;
+            enum class context_t { object, array } context;
+            auto update_context = [&]() {
+                context = stack.top().is<json_object>() ? context_t::object : context_t::array;
+            };
+            update_context();
+            enum class token_expected_t {
+                value, key, comma, colon
+            } token_expected{
+                context == context_t::array ? token_expected_t::value : token_expected_t::key
+            };
+            bool dangling_comma{ false };
 
-            if (token.type == json_token_type::right_brace) {
-                return json_value(std::move(obj));
-            }
             while (true) {
-                if (token.type != json_token_type::string_value) {
-                    is_valid_ = false;
-                    error_message_ = "Expected string key in object";
-                    return nullptr;
+                json_token token = lexer_.next_token();
+                if (token.type == json_token_type::left_brace) { // {
+                    if (token_expected == token_expected_t::value) {
+                        stack.push(json_value(json_object{}));
+                        context = context_t::object;
+                        token_expected = token_expected_t::key;
+                        dangling_comma = false;
+                    }
+                    else {
+                        log_error_("Unexpected left brace in array or object context");
+                        return json_value(nullptr);
+                    }
                 }
-                std::string key{ token.value.as<json_string_t>() };
-
-                token = lexer_.next_token();
-                if (token.type != json_token_type::colon) {
-                    is_valid_ = false;
-                    error_message_ = "Expected colon after key in object";
-                    return nullptr;
+                else if (token.type == json_token_type::right_brace) { // }
+                    if (dangling_comma && token_expected == token_expected_t::key) {
+                        log_error_("Dangling comma before right brace in object context");
+                        return json_value(nullptr);
+                    }
+                    if (context == context_t::object) {
+                        json_value complete_node;
+                        complete_node = std::move(stack.top());
+                        stack.pop();
+                        if (stack.empty()) {
+                            return json_value(std::move(complete_node));
+                        }
+                        else {
+                            dangling_comma = false;
+                            update_context();
+                            if (context == context_t::array) {
+                                stack.top().as<json_array>().emplace_back(std::move(complete_node));
+                            }
+                            else {
+                                stack.top().as<json_object>()[current_key] = std::move(complete_node);
+                            }
+                            token_expected = token_expected_t::comma;
+                        }
+                    }
+                    else { // context == context_t::array
+                        log_error_("Unexpected right brace in array context");
+                        return json_value(nullptr);
+                    }
                 }
-
-                token = lexer_.next_token();
-                if (token.type == json_token_type::left_brace) {
-                    obj[key] = std::move(parse_object_());
+                else if (token.type == json_token_type::left_bracket) { // [
+                    if (token_expected == token_expected_t::value) {
+                        stack.push(json_value(json_array{}));
+                        context = context_t::array;
+                        //token_expected = token_expected_t::value;
+                        dangling_comma = false;
+                    }
+                    else {
+                        log_error_("Unexpected left bracket in array or object context");
+                        return json_value(nullptr);
+                    }
                 }
-                else if (token.type == json_token_type::left_bracket) {
-                    obj[key] = std::move(parse_array_());
+                else if (token.type == json_token_type::right_bracket) { // ]
+                    if (dangling_comma && token_expected == token_expected_t::value) {
+                        log_error_("Dangling comma before right bracket in array context");
+                        return json_value(nullptr);
+                    }
+                    if (context == context_t::array) {
+                        json_value complete_node;
+                        complete_node = std::move(stack.top());
+                        stack.pop();
+                        if (stack.empty()) {
+                            return json_value(std::move(complete_node));
+                        }
+                        else {
+                            update_context();
+                            if (context == context_t::array) {
+                                stack.top().as<json_array>().emplace_back(std::move(complete_node));
+                            }
+                            else {
+                                stack.top().as<json_object>()[current_key] = std::move(complete_node);
+                            }
+                            token_expected = token_expected_t::comma;
+                        }
+                    }
+                    else {
+                        log_error_("Unexpected right bracket in object context");
+                        return json_value(nullptr);
+                    }
                 }
-                else if (token.type == json_token_type::string_value ||
-                    token.type == json_token_type::int_value ||
-                    token.type == json_token_type::double_value ||
-                    token.type == json_token_type::bool_value ||
-                    token.type == json_token_type::null_value) {
-                    obj[key] = std::move(token.value);
+                else if (token.type == json_token_type::end_of_file) {
+                    log_error_("Unexpected end of file in array or object context");
+                    return json_value(nullptr);
+                }
+                else if (token.type == json_token_type::invalid) {
+                    log_error_(token.error_str);
+                    return json_value(nullptr);
+                }
+                else if (is_value_token(token.type)) {
+                    if (token_expected == token_expected_t::key && context == context_t::object) {
+                        if (!token.value.is<json_string_t>()) {
+                            log_error_("Expected string key in object context");
+                            return json_value(nullptr);
+                        }
+                        current_key = std::move(token.value.as<json_string_t>());
+                        if (current_key.empty()) {
+                            log_error_("Empty key in object context");
+                            return json_value(nullptr);
+                        }
+                        token_expected = token_expected_t::colon;
+                    }
+                    else if (token_expected == token_expected_t::value) {
+                        if (context == context_t::object) {
+                            stack.top().as<json_object>()[current_key] = std::move(token.value);
+                        }
+                        else { // context == context_t::array
+                            stack.top().as<json_array>().emplace_back(std::move(token.value));
+                        }
+                        token_expected = token_expected_t::comma;
+                    }
+                    else {
+                        log_error_("Unexpected value in array or object context");
+                        return json_value(nullptr);
+                    }
+                }
+                else if (token.type == json_token_type::comma) {
+                    if (token_expected == token_expected_t::comma) {
+                        token_expected = context == context_t::array ? token_expected_t::value : token_expected_t::key;
+                        dangling_comma = true;
+                        continue;
+                    }
+                    else {
+                        log_error_("Unexpected comma in array or object context");
+                        return json_value(nullptr);
+                    }
+                }
+                else if (token.type == json_token_type::colon) {
+                    if (token_expected == token_expected_t::colon && context == context_t::object) {
+                        token_expected = token_expected_t::value;
+                        continue;
+                    }
+                    else {
+                        log_error_("Unexpected colon in array or object context");
+                        return json_value(nullptr);
+                    }
                 }
                 else {
-                    is_valid_ = false;
-                    error_message_ = "Invalid value type in object for key: " + key;
-                    return nullptr;
+                    log_error_("Unexpected token in array: " + token.error_str);
+                    return json_value(nullptr);
                 }
-
-                token = lexer_.next_token();
-                if (token.type == json_token_type::right_brace) {
-                    break;
-                }
-                if (token.type != json_token_type::comma) {
-                    is_valid_ = false;
-                    error_message_ = "Expected comma or right brace in object";
-                    return nullptr;
-                }
-
-                token = lexer_.next_token();
             }
-            return json_value(std::move(obj));
+
+            return json_value(nullptr);
         }
 
     private:
@@ -669,7 +740,7 @@ namespace json {
             from_string(str);
         }
 
-        json_document(std::initializer_list<json_value> list) {
+        explicit json_document(std::initializer_list<json_value> list) {
             json_array tmp;
             tmp.reserve(list.size());
             for (const auto& item : list) {
