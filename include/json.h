@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stack>
 #include <cassert>
+#include <format>
 
 namespace json {
 
@@ -70,7 +71,7 @@ namespace json {
         }
 
         explicit json_value(const char* value) :
-            json_value(std::string(value))
+            value_(std::string(value))
         {
         }
 
@@ -93,31 +94,31 @@ namespace json {
 
         template <typename T>
             requires concepts::is_json_value<T>
-        T& as() {
+        [[nodiscard]] T& as() {
             return std::get<T>(value_);
         }
 
         template <typename T>
             requires concepts::is_json_value<T>
-        const T& as() const {
-            return const_cast<json_value*>(this)->as<T>();
+        [[nodiscard]] const T& as() const {
+            return std::get<T>(value_);
         }
 
         template <typename T>
             requires concepts::is_json_value<T>
-        T* try_as() {
+        [[nodiscard]] T* try_as() {
             return is<T>() ? &std::get<T>(value_) : nullptr;
         }
 
         template <typename T>
             requires concepts::is_json_value<T>
-        const T* try_as() const {
-            return const_cast<json_value*>(this)->try_as<T>();
+        [[nodiscard]] const T* try_as() const {
+            return is<T>() ? &std::get<T>(value_) : nullptr;
         }
 
         template <typename T>
             requires concepts::is_json_value<T>
-        bool is() const {
+        [[nodiscard]] bool is() const {
             return std::holds_alternative<T>(value_);
         }
 
@@ -181,30 +182,23 @@ namespace json {
                 case '{':
                     advance_();
                     return { json_token_type::left_brace };
-                    break;
                 case '}':
                     advance_();
                     return { json_token_type::right_brace };
-                    break;
                 case '[':
                     advance_();
                     return { json_token_type::left_bracket };
-                    break;
                 case ']':
                     advance_();
                     return { json_token_type::right_bracket };
-                    break;
                 case ':':
                     advance_();
                     return { json_token_type::colon };
-                    break;
                 case ',':
                     advance_();
                     return { json_token_type::comma };
-                    break;
                 case '"':
                     return parse_string_();
-                    break;
             }
 
             if (std::isdigit(ch) || ch == '-') {
@@ -494,7 +488,7 @@ namespace json {
 
         }
 
-        json_value parse() {
+        [[nodiscard]] json_value parse() {
 
             json_value root;
 
@@ -597,7 +591,7 @@ namespace json {
                                 stack.top().as<json_array>().emplace_back(std::move(complete_node));
                             }
                             else {
-                                stack.top().as<json_object>()[current_key] = std::move(complete_node);
+                                stack.top().as<json_object>().emplace(std::move(current_key), std::move(complete_node));
                             }
                             token_expected = token_expected_t::comma;
                         }
@@ -637,7 +631,7 @@ namespace json {
                                 stack.top().as<json_array>().emplace_back(std::move(complete_node));
                             }
                             else {
-                                stack.top().as<json_object>()[current_key] = std::move(complete_node);
+                                stack.top().as<json_object>().emplace(std::move(current_key), std::move(complete_node));
                             }
                             token_expected = token_expected_t::comma;
                         }
@@ -708,8 +702,6 @@ namespace json {
                     return json_value(nullptr);
                 }
             }
-
-            return json_value(nullptr);
         }
 
     private:
@@ -741,13 +733,9 @@ namespace json {
             from_string(str);
         }
 
-        explicit json_document(std::initializer_list<json_value> list) {
-            json_array tmp;
-            tmp.reserve(list.size());
-            for (const auto& item : list) {
-                tmp.push_back(item);
-            }
-            root_ = std::move(tmp);
+        explicit json_document(std::initializer_list<json_value> list) :
+            root_(json_value(list))
+        {
         }
 
     public:
@@ -757,7 +745,7 @@ namespace json {
         }
 
         const json_value& root() const {
-            return const_cast<json_document*>(this)->root();
+            return root_;
         }
 
         bool empty() const {
@@ -818,9 +806,7 @@ namespace json {
                     case '\t': result += "\\t"; break;
                     default:
                         if (static_cast<unsigned char>(c) < 0x20) {
-                            char buf[7];
-                            snprintf(buf, sizeof(buf), "\\u%04x", c & 0xFF);
-                            result += buf;
+                            result += "\\u" + std::format("{:04x}", static_cast<unsigned char>(c));
                         }
                         else {
                             result += c;
