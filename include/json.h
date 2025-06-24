@@ -547,7 +547,7 @@ namespace json {
         }
 
         json_value parse_complex_(std::stack<json_value>& stack) {
-            std::string current_key;
+            std::stack<std::string> key_stack;
             enum class context_t { object, array } context{
                 stack.top().is<json_object>() ? context_t::object : context_t::array
             };
@@ -591,7 +591,8 @@ namespace json {
                                 stack.top().as<json_array>().emplace_back(std::move(complete_node));
                             }
                             else {
-                                stack.top().as<json_object>().emplace(std::move(current_key), std::move(complete_node));
+                                stack.top().as<json_object>().emplace(std::move(key_stack.top()), std::move(complete_node));
+                                key_stack.pop();
                             }
                             token_expected = token_expected_t::comma;
                         }
@@ -631,7 +632,8 @@ namespace json {
                                 stack.top().as<json_array>().emplace_back(std::move(complete_node));
                             }
                             else {
-                                stack.top().as<json_object>().emplace(std::move(current_key), std::move(complete_node));
+                                stack.top().as<json_object>().emplace(std::move(key_stack.top()), std::move(complete_node));
+                                key_stack.pop();
                             }
                             token_expected = token_expected_t::comma;
                         }
@@ -655,8 +657,8 @@ namespace json {
                             log_error_("Expected string key in object context");
                             return json_value(nullptr);
                         }
-                        current_key = std::move(token.value.as<json_string_t>());
-                        if (current_key.empty()) {
+                        key_stack.emplace(std::move(token.value.as<json_string_t>()));
+                        if (key_stack.top().empty()) {
                             log_error_("Empty key in object context");
                             return json_value(nullptr);
                         }
@@ -664,7 +666,8 @@ namespace json {
                     }
                     else if (token_expected == token_expected_t::value) {
                         if (context == context_t::object) {
-                            stack.top().as<json_object>()[current_key] = std::move(token.value);
+                            stack.top().as<json_object>()[key_stack.top()] = std::move(token.value);
+                            key_stack.pop();
                         }
                         else { // context == context_t::array
                             stack.top().as<json_array>().emplace_back(std::move(token.value));
@@ -772,7 +775,9 @@ namespace json {
     public:
 
         std::string to_string() const {
-            return format_value_(root_);
+            return (root_.is<json_array>() || root_.is<json_object>()) ?
+                format_complex_node_(root_) :
+                format_simple_node_(root_);
         }
 
         void from_string(const std::string& str) {
@@ -817,52 +822,137 @@ namespace json {
             return result;
         }
 
-        std::string format_array_(const json_array& value, int indent_level = 0, int indent_step = 4) const {
-            if (value.empty()) {
-                return "[]";
-            }
+        std::string format_complex_node_(const json_value& value) const {
+            struct stack_frame {
+                const json_value* ptr{ nullptr };
+                std::size_t index{ 0 };
+                std::size_t size{ 0 };
+                std::vector<std::string> keys{};
+            };
 
-            std::string indent(indent_level * indent_step, ' ');
-            std::string next_indent((indent_level + 1) * indent_step, ' ');
-            std::ostringstream result; result << "[\n";
+            int indent_level = 0;
+            constexpr int indent_size = 4;
+            std::ostringstream oss;
+            std::stack<stack_frame> stack;
 
-            for (std::size_t i{ 0 }; i < value.size(); ++i) {
-                result << next_indent << format_value_(value[i], indent_level + 1, indent_step);
-                if (i + 1 < value.size()) {
-                    result << ",";
+            stack.push({ &value });
+
+            auto check_comma = [&]() {
+                if (!stack.empty()) {
+                    const auto& top_frame = stack.top();
+                    if (top_frame.index < top_frame.size) {
+                        oss << ",\n";
+                    }
+                    else {
+                        oss << "\n";
+                    }
                 }
-                result << "\n";
+            };
+
+            while (!stack.empty()) {
+                stack_frame& frame = stack.top();
+                if (frame.ptr->is<json_array>()) {
+                    const json_array& arr = frame.ptr->as<json_array>();
+                    frame.size = arr.size();
+                    if (frame.size == 0) {
+                        oss << "[]";
+                        stack.pop();
+                        check_comma();
+                        continue;
+                    }
+                    if (frame.index == 0) {
+                        oss << "[\n";
+                        indent_level++;
+                    }
+                    bool next{ false };
+                    while (frame.index < frame.size) {
+                        oss << std::string(indent_level * indent_size, ' ');
+                        if (arr[frame.index].is<json_object>() || arr[frame.index].is<json_array>()) {
+                            stack.push({ &arr[frame.index] });
+                            ++frame.index;
+                            next = true;
+                            break;
+                        }
+                        else {
+                            oss << format_simple_node_(arr[frame.index]);
+                        }
+                        if (frame.index < frame.size - 1) {
+                            oss << ",\n";
+                        }
+                        else {
+                            oss << "\n";
+                        }
+                        frame.index++;
+                    }
+                    if (!next) {
+                        --indent_level;
+                        oss << std::string(indent_level * indent_size, ' ') << "]";
+                        stack.pop();
+                        check_comma();
+                    }
+
+                }
+                else { // frame.ptr->is<json_object>()
+                    const json_object& obj = frame.ptr->as<json_object>();
+                    frame.size = obj.size();
+                    if (frame.size == 0) {
+                        oss << "{}";
+                        stack.pop();
+                        check_comma();
+                        continue;
+                    }
+                    else {
+                        for (const auto& [key, _] : obj) {
+                            frame.keys.push_back(key);
+                        }
+                    }
+                    if (frame.index == 0) {
+                        oss << "{\n";
+                        indent_level++;
+                    }
+                    bool next = false;
+                    while (frame.index < frame.size) {
+                        const std::string& key = frame.keys[frame.index];
+                        const json_value& val = obj.at(key);
+
+                        oss << std::string(indent_level * indent_size, ' ')
+                            << format_string_(key) << ": ";
+
+                        if (val.is<json_object>() || val.is<json_array>()) {
+                            stack.push({ &val });
+                            ++frame.index;
+                            next = true;
+                            break;
+                        }
+                        else {
+                            oss << format_simple_node_(val);
+                        }
+
+                        if (frame.index < frame.size - 1) {
+                            oss << ",\n";
+                        }
+                        else {
+                            oss << "\n";
+                        }
+
+                        ++frame.index;
+                    }
+
+                    if (!next) {
+                        --indent_level;
+                        oss << std::string(indent_level * indent_size, ' ') << "}";
+                        stack.pop();
+                        check_comma();
+                    }
+                }
             }
-            result << indent << "]";
-            return result.str();
+
+            return oss.str();
         }
 
-        std::string format_object_(const json_object& value, int indent_level = 0, int indent_step = 4) const {
-            if (value.empty()) {
-                return "{}";
-            }
-            std::string indent(indent_level * indent_step, ' ');
-            std::string next_indent((indent_level + 1) * indent_step, ' ');
-            std::ostringstream result;
-            result << "{\n";
-            std::size_t count{ 0 };
-            for (const auto& [k, v] : value) {
-                result << next_indent << format_string_(k) << ": " << format_value_(v, indent_level + 1, indent_step);
-                if (++count < value.size()) result << ",";
-                result << "\n";
-            }
-            result << indent << "}";
 
-            return result.str();
-        }
-
-        std::string format_value_(const json_value& value, int indent_level = 0, int indent_step = 4) const {
-            std::string indent(indent_level * indent_step, ' ');
-            std::string next_indent((indent_level + 1) * indent_step, ' ');
-            if (value.is<json_null_t>()) {
-                return "null";
-            }
-            else if (value.is<json_bool_t>()) {
+        std::string format_simple_node_(const json_value& value) const {
+            if (value.is<json_bool_t>()) {
                 return value.as<json_bool_t>() ? "true" : "false";
             }
             else if (value.is<json_int_t>()) {
@@ -877,13 +967,9 @@ namespace json {
             else if (value.is<json_string_t>()) {
                 return format_string_(value.as<json_string_t>());
             }
-            else if (value.is<json_array>()) {
-                return format_array_(value.as<json_array>(), indent_level, indent_step);
+            else { // json_null_t
+                return "null";
             }
-            else if (value.is<json_object>()) {
-                return format_object_(value.as<json_object>(), indent_level, indent_step);
-            }
-            return {};
         }
 
     private:
