@@ -25,6 +25,8 @@ namespace json {
     using json_object = std::unordered_map<json_string_t, json_value>;
 
     namespace concepts {
+        template <typename T>
+        concept is_int = (std::is_integral_v<T> && !std::is_same_v<T, bool>);
 
         template <typename T>
         concept is_json_value =
@@ -34,7 +36,8 @@ namespace json {
             std::is_same_v<T, json_double_t> ||
             std::is_same_v<T, json_string_t> ||
             std::is_same_v<T, json_array> ||
-            std::is_same_v<T, json_object>;
+            std::is_same_v<T, json_object> ||
+            std::is_same_v<T, const char*>;
 
     } // namespace concepts
 
@@ -59,9 +62,9 @@ namespace json {
         }
 
         template <typename T>
-            requires (concepts::is_json_value<T>)
+            requires (concepts::is_json_value<T> || concepts::is_int<T>)
         json_value(T value) :
-            value_(std::move(value))
+            value_(std::conditional_t<std::is_integral_v<T>, json_int_t, T>(std::move(value)))
         {
         }
 
@@ -77,12 +80,18 @@ namespace json {
 
         explicit json_value(std::initializer_list<json_value> list)
         {
-            json_array tmp;
-            tmp.reserve(list.size());
-            for (const auto& item : list) {
-                tmp.push_back(item);
+            if (list.size() == 1) {
+                json_value tmp(*(list.begin()));
+                std::swap(tmp.value_, value_);
             }
-            value_ = std::move(tmp);
+            else {
+                json_array tmp;
+                tmp.reserve(list.size());
+                for (const auto& item : list) {
+                    tmp.push_back(item);
+                }
+                value_ = std::move(tmp);
+            }
         }
 
         json_value(const json_value&) = default;
@@ -93,31 +102,31 @@ namespace json {
     public:
 
         template <typename T>
-            requires concepts::is_json_value<T>
+            requires (concepts::is_json_value<T>)
         [[nodiscard]] T& as() {
             return std::get<T>(value_);
         }
 
         template <typename T>
-            requires concepts::is_json_value<T>
+            requires (concepts::is_json_value<T>)
         [[nodiscard]] const T& as() const {
             return std::get<T>(value_);
         }
 
         template <typename T>
-            requires concepts::is_json_value<T>
+            requires (concepts::is_json_value<T>)
         [[nodiscard]] T* try_as() {
             return is<T>() ? &std::get<T>(value_) : nullptr;
         }
 
         template <typename T>
-            requires concepts::is_json_value<T>
+            requires (concepts::is_json_value<T>)
         [[nodiscard]] const T* try_as() const {
             return is<T>() ? &std::get<T>(value_) : nullptr;
         }
 
         template <typename T>
-            requires concepts::is_json_value<T>
+            requires (concepts::is_json_value<T>)
         [[nodiscard]] bool is() const {
             return std::holds_alternative<T>(value_);
         }
